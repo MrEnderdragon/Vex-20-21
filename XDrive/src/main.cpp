@@ -17,11 +17,11 @@
 // Lift                 motor         7               
 // Intake1              motor         13              
 // Intake2              motor         14              
-// Viss                 vision        11              
 // Discarder            motor         9               
 // DriveBR              motor         4               
 // US_top               sonar         E, F            
 // US_vision            sonar         A, B            
+// Viss                 optical       11              
 // ---- END VEXCODE CONFIGURED DEVICES ----
 
 #include "vex.h"
@@ -41,11 +41,12 @@ competition Competition;
 // ---- USER INPUT VARIABLES ----
 int driveThreshold = 10;
 int turnThreshold = 10;
-double ballDetectThresh = 3;
-double ballOutThresh = 3.2;
-double moveStuckThresh = 0; // in degrees
+double ballDetectThresh = 4;
+double ballOutThresh = 4;
+double moveStuckThresh = 0.01; // in degrees
 double moveStuckReps = 50;
 int moveAcc = 10; // in millisecs per rep
+int revTime = 300;
 
 float liftAccelVal = 200;
 float liftAccelSpeed = 0.0006;
@@ -56,6 +57,12 @@ float normMult = 1.9;
 double wheelDiam = 2.5; //inches
 double chassisWidth = 18.5; //inches
 
+int blueHue = 155; // 60 - 250
+float blueThresh = 95;
+
+int redHue = 20; // 0-40
+float redThresh = 20;
+
 // ---- PROGRAM VARIABLES ----
 
 float multiplier = normMult;
@@ -65,8 +72,10 @@ bool aPressed = false;
 // int isBlue = -1;
 int isBlue = 0;
 int returnState = -1;
+long cycles = 0;
 
-struct asyncParams asyncs;
+int revCounter = 0;
+int stopCounter = 0;
 
 // ---- FORWARD DRIVE MATH ----
 
@@ -155,6 +164,17 @@ double outUS() {
   return US_vision.distance(vex::distanceUnits::in);
 }
 
+int getViss () {
+  int res = Viss.hue();
+
+  if(res >= blueHue-blueThresh && res <= blueHue+blueThresh){
+    return 1;
+  }else if(res >= redHue-redThresh && res <= redHue+redThresh){
+    return 0;
+  }
+  return -1;
+}
+
 void stopDrive(int motorr){
   //stops driving
 
@@ -170,8 +190,36 @@ void returnHome () {
 
 }
 
+void driveTime (int speed, double amTime, double ang){
+  double radAng = ((ang+45)/360)*2*mPi;
+  double xSpin = cos(radAng);
+  double ySpin = sin(radAng);
+
+  double timeToSpin = std::max(std::abs(xSpin),std::abs(ySpin))/speed;
+
+  int start = vex::timer::system();
+
+  DriveFL.spin(vex::directionType::fwd, xSpin/timeToSpin, vex::velocityUnits::rpm);
+  DriveBR.spin(vex::directionType::fwd, xSpin/timeToSpin, vex::velocityUnits::rpm);
+
+  DriveFR.spin(vex::directionType::fwd, ySpin/timeToSpin, vex::velocityUnits::rpm);
+  DriveBL.spin(vex::directionType::fwd, ySpin/timeToSpin, vex::velocityUnits::rpm);
+
+  while(vex::timer::system() - start <= amTime){
+    vex::task::sleep(moveAcc);
+  }
+
+  DriveFL.stop();
+  DriveFR.stop();
+  DriveBL.stop();
+  DriveBR.stop();
+}
+
 //ang goes counter-clockwise
-int driveDist (int speed, double dist, double ang, bool returrn){
+int driveDist (int speed, double dist, double ang, bool returrn, int speedDeccel = -100){
+  if(speedDeccel == -100){
+    speedDeccel = speed;
+  }
   double radAng = ((ang+45)/360)*2*mPi;
   double xSpin = dist*cos(radAng) / distPerWheelDeg;
   double ySpin = dist*sin(radAng) / distPerWheelDeg;
@@ -189,6 +237,7 @@ int driveDist (int speed, double dist, double ang, bool returrn){
   DriveBL.resetRotation();
 
   double timeToSpin = std::max(std::abs(xSpin),std::abs(ySpin))/speed;
+  double timeToSpinSlow = std::max(std::abs(xSpin),std::abs(ySpin))/speedDeccel;
   bool isStopped = false;
 
   DriveFL.spin(vex::directionType::fwd, xSpin/timeToSpin, vex::velocityUnits::rpm);
@@ -197,17 +246,44 @@ int driveDist (int speed, double dist, double ang, bool returrn){
   DriveFR.spin(vex::directionType::fwd, ySpin/timeToSpin, vex::velocityUnits::rpm);
   DriveBL.spin(vex::directionType::fwd, ySpin/timeToSpin, vex::velocityUnits::rpm);
 
+  bool stopFL = false;
+  bool stopFR = false;
+  bool stopBL = false;
+  bool stopBR = false;
+
   while(!isStopped){
     isStopped = true;
 
-    if(std::abs(DriveFL.rotation(vex::rotationUnits::deg)) > std::abs(xSpin)) DriveFL.stop();
-    else isStopped = false;
-    if(std::abs(DriveBR.rotation(vex::rotationUnits::deg)) > std::abs(xSpin)) DriveBR.stop();
-    else isStopped = false;
-    if(std::abs(DriveFR.rotation(vex::rotationUnits::deg)) > std::abs(ySpin)) DriveFR.stop();
-    else isStopped = false;
-    if(std::abs(DriveBL.rotation(vex::rotationUnits::deg)) > std::abs(ySpin)) DriveBL.stop();
-    else isStopped = false;
+    if(std::abs(DriveFL.rotation(vex::rotationUnits::deg)) > std::abs(xSpin) || stopFL) {
+      DriveFL.stop();
+      stopFL = true;
+    }else isStopped = false;
+
+    if(std::abs(DriveBR.rotation(vex::rotationUnits::deg)) > std::abs(xSpin) || stopBR){
+      DriveBR.stop();
+      stopBR = true;
+    }else isStopped = false;
+
+    if(std::abs(DriveFR.rotation(vex::rotationUnits::deg)) > std::abs(ySpin) || stopFR) {
+      DriveFR.stop();
+      stopFR = true;
+    }else isStopped = false;
+    
+    if(std::abs(DriveBL.rotation(vex::rotationUnits::deg)) > std::abs(ySpin) || stopBL) {
+      DriveBL.stop();
+      stopBL = true;
+    }else isStopped = false;
+
+    if((std::abs(DriveFL.rotation(vex::rotationUnits::deg)) > std::abs(xSpin)*2/3 && !stopFL) &&
+    (std::abs(DriveBR.rotation(vex::rotationUnits::deg)) > std::abs(xSpin)*2/3 && !stopBR) && 
+    (std::abs(DriveFR.rotation(vex::rotationUnits::deg)) > std::abs(ySpin)*2/3 && !stopFR) && 
+    (std::abs(DriveBL.rotation(vex::rotationUnits::deg)) > std::abs(ySpin)*2/3 && !stopBL)) {
+      DriveFL.spin(vex::directionType::fwd, xSpin/timeToSpinSlow, vex::velocityUnits::rpm);
+      DriveBR.spin(vex::directionType::fwd, xSpin/timeToSpinSlow, vex::velocityUnits::rpm);
+
+      DriveFR.spin(vex::directionType::fwd, ySpin/timeToSpinSlow, vex::velocityUnits::rpm);
+      DriveBL.spin(vex::directionType::fwd, ySpin/timeToSpinSlow, vex::velocityUnits::rpm);
+    }
 
     if((DriveFL.isSpinning() && (std::abs(DriveFL.rotation(vex::rotationUnits::deg)) - std::abs(flRot) <= moveStuckThresh)) || 
     (DriveFR.isSpinning() && (std::abs(DriveFR.rotation(vex::rotationUnits::deg)) - std::abs(frRot) <= moveStuckThresh)) || 
@@ -282,9 +358,6 @@ void initialize () {
   int origRed1[] = {10,10}; 
   int origBlue1[] = {270,10}; 
 
-  Viss.setLedMode(vex::vision::ledMode::manual);
-  Viss.setLedBrightness(100);
-
   DriveFL.setBrake(vex::brakeType::brake);
   DriveFR.setBrake(vex::brakeType::brake);
   DriveBL.setBrake(vex::brakeType::brake);
@@ -299,9 +372,20 @@ void initialize () {
   Brain.Screen.drawRectangle(origBlue1[0], origBlue1[1], size[0], size[1], "#00719e");
 
   while(true){
-    if(Brain.Screen.pressing() || controlButton('X') || controlButton('Y')){
+    if(Brain.Screen.pressing() || controlButton('X') || controlButton('Y') || controlButton('B')){
       int X = Brain.Screen.xPosition();//X pos of press
       int Y = Brain.Screen.yPosition();// Y pos of press
+
+      if(controlButton('B')){
+        int size[] = {200,100};
+
+        Brain.Screen.setPenColor("#ff3700");
+        Brain.Screen.drawRectangle(origRed1[0], origRed1[1], size[0], size[1], "#8c1e00");
+
+        Brain.Screen.setPenColor("#00b7ff");
+        Brain.Screen.drawRectangle(origBlue1[0], origBlue1[1], size[0], size[1], "#00719e");
+        isBlue = -1;
+      }
 
       //Checks if press is within boundaries of rectangle
       // red rect (X)
@@ -352,28 +436,50 @@ void driveLoop () {
   // ---- AUTO-SORT ----
 
   bool revDisc = false;
+  // bool found = false;
   if(controlButton('U')) revDisc = true;
 
+  // if(visUS() <= ballDetectThresh){
+  //   Viss.takeSnapshot(Viss__BLUE_BALL);
+  //   if(Viss.objectCount > 0) {
+  //     if(isBlue == 0){
+  //       revCounter = revTime;
+  //       revDisc = true;
+  //     }
+  //     Viss.setLedColor(0, 0, 255);
+  //   }else {
+  //     Viss.takeSnapshot(Viss__RED_BALL);
+  //     if(Viss.objectCount > 0) {
+  //       if(isBlue == 1){
+  //         revCounter = revTime;
+  //         revDisc = true;
+  //       }
+  //       Viss.setLedColor(255, 0, 0);
+  //     }else {
+  //       Viss.setLedColor(255, 255, 255);
+  //     }
+  //   }
+  // }
+
   if(visUS() <= ballDetectThresh){
-    Viss.takeSnapshot(Viss__BLUE_BALL);
-    if(Viss.objectCount > 0) {
+    int visGot = getViss();
+
+    if(visGot == 1){
       if(isBlue == 0){
+        revCounter = revTime;
         revDisc = true;
       }
-      Viss.setLedColor(0, 0, 255);
-    }else {
-      Viss.takeSnapshot(Viss__RED_BALL);
-      if(Viss.objectCount > 0) {
-        if(isBlue == 1){
-          revDisc = true;
-        }
-        Viss.setLedColor(255, 0, 0);
-      }else {
-        Viss.setLedColor(255, 255, 255);
+    }else if(visGot == 0){
+      if(isBlue == 1){
+        revCounter = revTime;
+        revDisc = true;
       }
     }
   }
 
+  if(controlButton('R')){
+    revDisc = false;
+  }
   // ---- ELEVATOR ----
 
   if(controlButton('l', true)){
@@ -392,9 +498,9 @@ void driveLoop () {
     Discarder.spin(vex::directionType::fwd,-1 * fmin(liftAccelVal, 200),vex::velocityUnits::rpm);
   }else {
     if(controlButton('l', true)){
-      Discarder.spin(vex::directionType::fwd,(revDisc? -1:1) * fmin(liftAccelVal, 200),vex::velocityUnits::rpm);
+      Discarder.spin(vex::directionType::fwd,(revDisc? -0.8:1) * fmin(liftAccelVal, 200),vex::velocityUnits::rpm);
     }else if (controlButton('l', false)) {
-      Discarder.spin(vex::directionType::fwd,(revDisc? 1:-1) * fmin(liftAccelVal, 200),vex::velocityUnits::rpm);
+      Discarder.spin(vex::directionType::fwd,(revDisc? 1:-0.8) * fmin(liftAccelVal, 200),vex::velocityUnits::rpm);
     } else {
       Discarder.stop();
     }
@@ -430,23 +536,9 @@ void driveLoop () {
     aPressed = false;
   }
 
-  driveLoop();
-}
+  cycles++;
 
-int getViss () {
-  Viss.takeSnapshot(Viss__BLUE_BALL);
-  if(Viss.objectCount > 0) {
-    Viss.setLedColor(0, 0, 255);
-    return 1;
-  }else {
-    Viss.takeSnapshot(Viss__RED_BALL);
-    if(Viss.objectCount > 0) {
-      return 0;
-    }else {
-      Viss.setLedColor(255, 255, 255);
-    }
-  }
-  return -1;
+  driveLoop();
 }
 
 void expand () {
@@ -456,8 +548,8 @@ void expand () {
 
   vex::task::sleep(1000);
 
-  driveDist(50, 5, 90, false);
   driveDist(50, 5, 270, false);
+  driveDist(50, 5, 90, false);
 }
 
 void cycleBallsInt (int ballsToCheck, int sleepTime){
@@ -466,9 +558,15 @@ void cycleBallsInt (int ballsToCheck, int sleepTime){
   int lastBall = -1;
 
   Lift.spin(vex::directionType::fwd, 200,vex::velocityUnits::rpm);
-  Discarder.spin(vex::directionType::fwd, 200,vex::velocityUnits::rpm);
+  Discarder.spin(vex::directionType::fwd, 50,vex::velocityUnits::rpm);
   Intake1.spin(vex::directionType::rev, 150,vex::velocityUnits::rpm);
   Intake2.spin(vex::directionType::rev, 150,vex::velocityUnits::rpm);
+  vex::task::sleep(100);
+
+  Discarder.spin(vex::directionType::rev, 200,vex::velocityUnits::rpm);
+  vex::task::sleep(100);
+
+  Discarder.spin(vex::directionType::fwd, 200,vex::velocityUnits::rpm);
 
   while(!isAll){
     isAll = true;
@@ -477,6 +575,9 @@ void cycleBallsInt (int ballsToCheck, int sleepTime){
 
       //wait...
       while(visUS() > ballDetectThresh) vex::task::sleep(50);
+      vex::task::sleep(50);
+
+      Controller1.rumble(".");
 
       //check colour
       int vissRes = getViss();
@@ -495,10 +596,13 @@ void cycleBallsInt (int ballsToCheck, int sleepTime){
         revDisc = true;
       }
 
+      vex::task::sleep(250);
+
       //auto-sort
-      Discarder.spin(revDisc ? vex::directionType::rev : vex::directionType::fwd, 200,vex::velocityUnits::rpm);
+      Discarder.spin(revDisc ? vex::directionType::rev : vex::directionType::fwd, 175,vex::velocityUnits::rpm);
+      vex::task::sleep(100);
       while(outUS() <= ballOutThresh) vex::task::sleep(10);
-      Discarder.spin(vex::directionType::fwd, 200,vex::velocityUnits::rpm);
+      Discarder.spin(vex::directionType::fwd, 175,vex::velocityUnits::rpm);
     }
   }
   
@@ -544,24 +648,32 @@ void skillAutonomous() {
   Intake1.spin(vex::directionType::rev, 150,vex::velocityUnits::rpm);
   Intake2.spin(vex::directionType::rev, 150,vex::velocityUnits::rpm);
   
-  driveDist(150, tile+1, 0, false);
+  driveDist(150, tile+2, 0, false, 75);
 
   Lift.stop();
 
-  turnDegsCW(100, -90);
-  double driven = driveDist(150, tile, 0, false);
-  // driveDist(150, tile-2, 0, false);
+  turnDegsCW(100, -(90+7));
+  // double driven = driveDist(150, tile, 0, false);
+  driveDist(150, tile-4, 0, false, 75);
+
+  
 
   Lift.spin(vex::directionType::fwd, 50, vex::velocityUnits::rpm);
   Discarder.spin(vex::directionType::fwd, 50,vex::velocityUnits::rpm);
-  asyncs = {1000,&Lift};
+
+  struct asyncParams asyncs;
+  asyncs = {1000,&Discarder};
   vex::task t(asyncStop, (void*) &asyncs);
 
-  driveDist(100, driven, 180, false);
-  // driveDist(100, tile-2, 180, false);
+  struct asyncParams asyncs2;
+  asyncs2 = {1000,&Lift};
+  vex::task t2(asyncStop, (void*) &asyncs2);
 
-  turnDegsCW(100, -45);
-  driven = driveDist(100, sqrt(2)*tile-3, 0, false);
+  // driveDist(100, driven, 180, false);
+  driveDist(100, tile-2, 180, false, 50);
+
+  turnDegsCW(100, -45+0);
+  driveDist(100, sqrt(2)*tile+2, 0, false, 50);
 
   // Lift.spin(vex::directionType::fwd, 100, vex::velocityUnits::rpm);
   // Discarder.spin(vex::directionType::fwd, 200,vex::velocityUnits::rpm);
@@ -570,7 +682,7 @@ void skillAutonomous() {
   cycleBallsInt(2, 3000);
   // cycleBallsDumb(2, 2, 3000);
 
-  driveDist(100, sqrt(2)*tile-3, 180, false);
+  driveDist(100, sqrt(2)*tile-2, 180, false);
 
   Discarder.stop();
 
@@ -579,23 +691,34 @@ void skillAutonomous() {
   Intake2.spin(vex::directionType::rev, 200,vex::velocityUnits::rpm);
 
   turnDegsCW(150, 90+45+10);
+
+  //WALL ALIGN
+  driveTime(100, 2000, 180);
+
+  driveDist(100, tile+tile/2, 0, false, 50);
+
+  turnDegsCW(150, 95);
+
+  driveDist(100, tile/2, 0, false, 75);
+  driveDist(50, tile, 0, false);
+
+  turnDegsCW(100, -90);
   driveDist(100, tile/2, 0, false);
 
-  turnDegsCW(150, 110);
+  // cycleBallsDumb(0, 1, 3000);
 
-  //TODO: WALL-ALIGN? ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  driveDist(150, tile/2-1, 180, false);
+  driveDist(100, tile/2-1, 0, false);
+  driveDist(150, tile/2-1, 180, false);
+  driveDist(100, tile/2-1, 0, false);
+  driveDist(150, tile/2-1, 180, false);
 
-  driveDist(100, tile+(tile/2)-4, 0, false);
+  // turnDegsCW(100, -90);
+  // driveDist(150, tile, 0, false);
+  // turnDegsCW(150, 45);
 
-  turnDegsCW(100, 92);
-  driveDist(100, tile+5, 0, false);
-
-  cycleBallsDumb(1, 1, 3000);
-
-  driveDist(150, tile+5, 180, false);
-  turnDegsCW(100, -90);
-  driveDist(150, tile+(tile/2), 0, false);
-  turnDegsCW(150, 90);
+  // driveDist(100, sqrt(2)*2*tile-3, 0, false);
+  // cycleBallsInt(2, 3000);
 }
 
 int main() {
@@ -604,7 +727,7 @@ int main() {
 
   // Set up callbacks for autonomous and driver control periods.
   skillAutonomous();
-  //Competition.autonomous(autonomous);
+  // Competition.autonomous(skillAutonomous);
   Competition.drivercontrol(driveLoop);
 
   // Run the pre-autonomous function.
