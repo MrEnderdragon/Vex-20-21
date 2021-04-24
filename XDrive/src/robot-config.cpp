@@ -20,6 +20,7 @@ motor DriveBR = motor(PORT4, ratio18_1, true);
 sonar US_top = sonar(Brain.ThreeWirePort.E);
 sonar US_vision = sonar(Brain.ThreeWirePort.A);
 optical Viss = optical(PORT11);
+sonar US_out = sonar(Brain.ThreeWirePort.C);
 
 // VEXcode generated functions
 // define variable for remote controller enable/disable

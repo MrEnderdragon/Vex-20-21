@@ -15,6 +15,7 @@ extern motor DriveBR;
 extern sonar US_top;
 extern sonar US_vision;
 extern optical Viss;
+extern sonar US_out;
 
 /**
  * Used to initialize code/tasks/devices added using tools in VEXcode Pro.
